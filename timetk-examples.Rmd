@@ -1,0 +1,122 @@
+---
+title: "R Notebook to work with Timetk"
+output: html_notebook
+---
+
+based on https://www.business-science.io/code-tools/2020/08/19/five-minute-time-series-rolling-calculations.html
+
+```{r get the libraries}
+install.packages("tidyquant")
+
+library(tidyverse)
+library(tidyquant) 
+library(timetk)
+```
+
+Look at the example data 
+```{r look at FANG dataset}
+
+FANG
+```
+
+The adjusted column contains the adjusted closing prices for each day.
+```{r plot it}
+FANG %>%
+  group_by(symbol) %>%
+  plot_time_series(date, adjusted, .facet_ncol = 2, .interactive = FALSE)
+
+```
+The volume column contains the trade volume (number of times the stock was transacted) for the day.
+
+```{r plot volume }
+FANG %>%
+  group_by(symbol) %>%
+  plot_time_series(date, volume, .facet_ncol = 2, .interactive = FALSE)
+```
+
+Objective: Get the total trade volume by quarter
+
+```{r summarize by qtr}
+
+FANG %>%
+  group_by(symbol) %>%
+  summarise_by_time(
+    date, .by = "quarter",
+    volume = SUM(volume)
+  ) %>%
+  plot_time_series(date, volume, .facet_ncol = 2, .interactive = FALSE, .y_intercept = 0)
+```
+
+Objective: Get the first value in each month
+
+```{r get first val}
+FANG %>%
+  group_by(symbol) %>%
+  summarise_by_time(
+    date, .by = "month",
+    adjusted = FIRST(adjusted)
+  ) %>%
+  plot_time_series(date, adjusted, .facet_ncol = 2, .interactive = FALSE)
+
+```
+Objective: Get the adjusted stock prices in the 3rd quarter of 2013.
+```{r get a specific value}
+FANG %>%
+  group_by(symbol) %>%
+  filter_by_time(date, "2013-09", "2013") %>%
+  plot_time_series(date, adjusted, .facet_ncol = 2, .interactive = FALSE)
+
+```
+Objective: Make an irregular series regular.
+
+```{r fill in gaps}
+FANG %>%
+  group_by(symbol) %>%
+  pad_by_time(date, .by = "auto") # Guesses .by = "day"
+
+
+```
+Objective: Go from Daily to Hourly timestamp intervals for 1 month from the start date. Impute the missing values.
+
+```{r low to high freq}
+FANG %>%
+  group_by(symbol) %>%
+  pad_by_time(date, .by = "hour") %>%
+  mutate_at(vars(open:adjusted), .funs = ts_impute_vec, period = 1) %>%
+  filter_by_time(date, "start", FIRST(date) %+time% "1 month") %>%
+  plot_time_series(date, adjusted, .facet_ncol = 2, .interactive = FALSE) 
+
+```
+Objective: Calculate a “centered” simple rolling average with partial window rolling and the start and end windows.
+
+```{r rolling average}
+# Make the rolling function
+roll_avg_30 <- slidify(.f = AVERAGE, .period = 30, .align = "center", .partial = TRUE)
+# Apply the rolling function
+FANG %>%
+  select(symbol, date, adjusted) %>%
+  group_by(symbol) %>%
+  # Apply Sliding Function
+  mutate(rolling_avg_30 = roll_avg_30(adjusted)) %>%
+  pivot_longer(cols = c(adjusted, rolling_avg_30)) %>%
+  plot_time_series(date, value, .color_var = name,
+                   .facet_ncol = 2, .smooth = FALSE, 
+                   .interactive = FALSE)
+
+```
+Objective: Calculate a rolling regression.
+
+```{r rolling regression}
+# Rolling regressions are easy to implement using `.unlist = FALSE`
+lm_roll <- slidify(~ lm(..1 ~ ..2 + ..3), .period = 90, 
+                   .unlist = FALSE, .align = "right")
+FANG %>%
+  select(symbol, date, adjusted, volume) %>%
+  group_by(symbol) %>%
+  mutate(numeric_date = as.numeric(date)) %>%
+  # Apply rolling regression
+  mutate(rolling_lm = lm_roll(adjusted, volume, numeric_date)) %>%
+  filter(!is.na(rolling_lm))
+
+```
+
